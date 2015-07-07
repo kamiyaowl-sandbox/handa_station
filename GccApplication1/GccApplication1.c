@@ -4,203 +4,169 @@
 * Created: 2015/06/15 20:24:12
 *  Author: owl
 */
-#define F_CPU 8e6
-
 #include <avr/io.h>
-#include <avr/pgmspace.h>
 #include <util/delay.h>
+#include <avr/interrupt.h>
 
-#include "ImageData.h"
+//////////////////////////////////////////////////////////////////////////
+#define DDR_7SEG	DDRD
+#define PORT_7SEG	PORTD
 
-/* UART */
-#define BAUD 115200
-#define MYUBRR F_CPU/16/BAUD-1
+#define DDR_UI		DDRC
+#define PORT_UI		PORTC
+#define PIN_UI		PINC
 
-void uart_init(unsigned int ubrr)
-{
-	/*Set baud rate */
-	UBRR0H = (unsigned char)(ubrr>>8);
-	UBRR0L = (unsigned char)ubrr;
-	/*Enable receiver and transmitter */
-	UCSR0B = (1<<RXEN0)|(1<<TXEN0)|(1<<RXCIE0);
-	/* Set frame format: 8data, 1stop bit */
-	UCSR0C = (3<<UCSZ00);
-}
+#define PIN_LED_LOW			PC0
+#define PIN_LED_HIGH		PC1
+#define PIN_COM_7SEG_LOW	PC2
+#define PIN_COM_7SEG_HIGH	PC3
+#define PIN_ROT_A	PC4
+#define PIN_ROT_B	PC5
 
-void uart_send(char data)
-{
-	while ( !( UCSR0A & (1<<UDRE0)));
-	UDR0 = data;
-}
+#define ROTARY_STOP	0
+#define ROTARY_UP	1
+#define ROTARY_DOWN	2
 
-void uart_print(char* str){
-	while(*str != '\0'){
-		uart_send(*str);
-		++str;
+#define DDR_COMPONENT	DDRB
+#define PORT_COMPONENT	PORTB
+#define PIN_COMPONENT	PINB
+
+#define PIN_BUZZER	PB0
+#define PIN_SSR		PB1
+
+const uint8_t segment_data[] ={
+	0b11111100,
+	0b01100000,
+	0b11011010,
+	0b11110010,
+	0b01100110,
+	0b10110110,
+	0b10111110,
+	0b11100100,
+	0b11111110,
+	0b11110110,
+	0b11101110,
+	0b00111110,
+	0b00011010,
+	0b01111010,
+	0b10011110,
+	0b10001110,
+};
+
+
+volatile uint8_t segment_num_high = 0;
+volatile uint8_t segment_num_low = 0;
+
+volatile uint8_t segment_visible = 0x0;//0...LEFT, 1...RIGHT
+volatile uint16_t countdown_time = 0x0;
+
+uint8_t rotary_old = 0;
+
+void update_time(uint16_t sec){
+	if(sec < 100){
+		PORT_UI &= ~0x3;
+		PORT_UI |= (1 << PIN_LED_LOW);
+		segment_num_high = sec / 10;
+		segment_num_low = sec % 10;
+		} else {
+		PORT_UI &= ~0x3;
+		PORT_UI |= (1 << PIN_LED_HIGH);
+		uint16_t min = sec / 60;
+		segment_num_high = min / 10;
+		segment_num_low = min % 10;
 	}
 }
 
-/* END UART  */
-
-/* SPI */
-#define SPI_DDR		DDRB
-#define	SPI_PORT	PORTB
-#define SPI_SS			2
-#define SPI_MOSI		3
-#define SPI_MISO		4
-#define SPI_SCK			5
-
-void spi_master_init(void)
-{
-	PRR &= ~(1 << PRSPI);
-	SPI_DDR = (1 << SPI_MOSI)|(1 << SPI_SCK)|(1 << SPI_SS);
-	SPCR = (1<<SPE)|(1<<MSTR)|(1 << DORD)|(0 << SPR1)|(0<<SPR0);//DORD=1 : LSB First
-}
-
-void spi_master_send(uint8_t data)
-{
-	SPDR = data;
-	while(!(SPSR & (1<<SPIF)));
-}
-void spi_master_putarray(uint8_t* data,uint8_t len)
-{
-	for(uint8_t i = 0 ; i < len ; ++i)
-	spi_master_send(data[i]);
-}
-void spi_master_receive(uint8_t *data)
-{
-	SPDR = 0xFF;
-	while(!(SPSR & (1<<SPIF)));
-	*data = SPDR;
-}
-void spi_mater_transfer(uint8_t send,uint8_t *receive)
-{
-	SPDR = send;
-	while(!(SPSR & (1<<SPIF)));
-	*receive = SPDR;
-}
-/* END SPI*/
-
-/* LS027B */
-#define LS027B_DDR		DDRD
-#define LS027B_PORT		PORTD
-#define LS027B_CS		0
-#define LS027B_DISP		1
-
-#define M0	0//Data Update
-#define M1	1//VCOM Invert
-#define M2	2//All Clear
-
-uint8_t vcom_status = 0x0;
-uint8_t send_buf[54] = {};
-
-void ls027b_disp(uint8_t is_disp){
-	if(is_disp) LS027B_PORT |= (1 << LS027B_DISP);
-	else LS027B_PORT &= ~(1 << LS027B_DISP);
-}
-
-void ls027b_init(void){
-	spi_master_init();
-	LS027B_DDR = 0xff;
-	LS027B_PORT = 0x0;
-
-	ls027b_disp(0x1);
-}
-
-uint8_t ls027b_vcom(){
-	return (vcom_status++) & 0x80 ? (1 << M1) : (0 << M1);
-}
-void ls027b_clear() {
-	LS027B_PORT |= (1 << LS027B_CS);
-	send_buf[0] = 0x0;
-	send_buf[0] |= vcom_status | (1 << M2);
-	send_buf[1] = 0x0;
-	spi_master_putarray(send_buf,2);
-	//Wait
-	_delay_ms(1);
-	LS027B_PORT &= ~(1 << LS027B_CS);
-}
-
-void ls027b_showimg() {
-	for(uint8_t j = 0 ; j < 240 ; ++j){
-		
-		send_buf[0] = 0x0;
-		send_buf[0] |= vcom_status | (1 << M0);
-		send_buf[1] = 0x1 + j;
-		
-		for(uint8_t i = 0 ; i < 50 ; ++i){
-			send_buf[2 + i] = (uint8_t)pgm_read_byte(&(img_src[j][i]));
-		}
-		
-		send_buf[52] = 0x0;
-		send_buf[53] = 0x0;
-		LS027B_PORT |= (1 << LS027B_CS);
-		spi_master_putarray(send_buf,54);
-		LS027B_PORT &= ~(1 << LS027B_CS);
+uint8_t rotary_update(){
+	uint8_t current = (PIN_UI >> 4) & 0x3;
+	switch(current) {
+		case 2:
+		current = 3;
+		break;
+		case 3:
+		current = 2;
+		break;
+		default:
+		break;
 	}
-}
-
-void ls027b_update(uint16_t l_data, uint16_t r_data) {
-	for(uint8_t j = 0 ; j < 240 ; ++j){
-		
-		send_buf[0] = 0x0;
-		send_buf[0] |= vcom_status | (1 << M0);
-		send_buf[1] = 0x1 + j;
-		
-		for(uint8_t i = 0 ; i < 50 ; ++i){
-			if(j < 120){
-				send_buf[2 + i] = (i * 8 < l_data) ? 0xff : 0x0;
-				} else {
-				send_buf[2 + i] = (i * 8 < r_data) ? 0xff : 0x0;
-			}
-		}
-		
-		send_buf[52] = 0x0;
-		send_buf[53] = 0x0;
-		LS027B_PORT |= (1 << LS027B_CS);
-		spi_master_putarray(send_buf,54);
-		LS027B_PORT &= ~(1 << LS027B_CS);
+	int8_t diff = current - rotary_old;
+	uint8_t result = 0;
+	switch(diff) {
+		case 1:
+		case -3:
+		result = ROTARY_UP;
+		break;
+		case -1:
+		case 3:
+		result = ROTARY_DOWN;
+		break;
+		default:
+		break;
 	}
+	rotary_old = current;
+	return result;
 }
-
-/* END LS027B */
-
-/* ADC */
-void adc_init(){
-	ADMUX |= (0 << REFS1) | (1 << REFS0) | (0 << ADLAR) | (0b0000);
-	//ADIF:ad interrupt flag
-	//ADIE:ad interrupt enable
-	//ADPS[2:0] = 001:1/2 ~ 111:1/128
-	ADCSRA |= (1 << ADEN) | (1 << ADSC) | (0 << ADATE) | (0 << ADIE) | (0b111);
-	ADCSRB |= 0b000;
+void init_ui(){
+	DDR_COMPONENT = 0x03;
 	
+	DDR_UI = 0b001111;
+	PORT_UI = 0b111111;
+	
+	DDR_7SEG = 0xff;
+	
+	TCCR0B = 0x03;//1/64
+	TIMSK0 = 0x01;//TOIE
 }
-uint16_t adc_read(uint8_t ch){
-	ADMUX &= ~0b1111;
-	ADMUX |= (0b1111 & ch);
-	ADCSRA |= (1 << ADSC);
-	//wait
-	while(ADCSRA & (1 << ADSC));
-	return ADC;
+
+ISR(TIMER0_OVF_vect){
+	//rotary
+	switch(rotary_update()){
+		case ROTARY_UP:
+			countdown_time += countdown_time < 100 ? 10 : 60;
+			break;
+		case ROTARY_DOWN:
+			countdown_time -= countdown_time > 10 ? 10 : countdown_time;
+			break;
+	}
+	//7seg
+	update_time(countdown_time);
+	switch(segment_visible++ & 0x7){
+		case 0x0:
+		case 0x4:
+		PORT_7SEG = 0xff;
+		PORT_UI |= 0b1100;
+		break;
+		case 0x1:
+		PORT_7SEG = ~segment_data[segment_num_high & 0xf];
+		PORT_UI &= ~(1 << PIN_COM_7SEG_HIGH);
+		break;
+		case 0x5:
+		PORT_7SEG = ~segment_data[segment_num_low & 0xf];
+		PORT_UI &= ~(1 << PIN_COM_7SEG_LOW);
+		break;
+	}
+	//SSR
+	if(countdown_time) PORT_COMPONENT |= (1 << PIN_SSR);
+	else PORT_COMPONENT &= ~(1 << PIN_SSR);
 }
-/* End ADC */
+
+//////////////////////////////////////////////////////////////////////////
 
 int main(void)
 {
-	uint16_t l_data = 0x0, r_data = 0x0;
-	adc_init();
+	_delay_ms(500);
+	countdown_time = 60 * 31;
 	
-	ls027b_init();
-	ls027b_clear();
-	ls027b_showimg();
-	ls027b_disp(0x1);
-	_delay_ms(1000);
+	init_ui();
 	
-	while(1)
-	{
-		l_data = adc_read(0x0);
-		r_data = adc_read(0x1);
+	sei();
+	///////////////////////////
+	
+	for(uint16_t i = 0 ; ; ++i){
+		if(countdown_time > 0) --countdown_time;
 		
-		ls027b_update(l_data,r_data);
+		for(uint16_t j = 0 ; j < 1000 ; ++j){
+			_delay_us(1000);
+		}
 	}
 }
