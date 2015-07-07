@@ -122,7 +122,8 @@ ISR(TIMER0_OVF_vect){
 	//rotary
 	switch(rotary_update()){
 		case ROTARY_UP:
-			countdown_time += countdown_time < 100 ? 10 : 60;
+			if(countdown_time < 99 * 60)
+				countdown_time += countdown_time < 100 ? 10 : 60;
 			break;
 		case ROTARY_DOWN:
 			countdown_time -= countdown_time > 10 ? 10 : countdown_time;
@@ -155,7 +156,7 @@ ISR(TIMER0_OVF_vect){
 int main(void)
 {
 	_delay_ms(500);
-	countdown_time = 60 * 31;
+	countdown_time = 60 * 60;
 	
 	init_ui();
 	
